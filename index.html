@@ -1,0 +1,34 @@
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.3/brython.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.3/brython_stdlib.min.js">
+    </script>
+
+    <style>
+    .codearea {
+        font-family:'Oxygen Mono', Consolas, 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+        font-size:14px;
+        overflow:auto;
+        width: 120ch;
+        height: 55ch;
+        margin-left: 2%;
+    }
+    </style>
+</head>
+
+<body onload="brython({debug: 1/*, pythonpath: ['https://raw.githubusercontent.com/symasm/symasm/main/']*/})">
+
+<script type="text/python">
+# [https://github.com/brython-dev/brython/blob/master/www/src/Lib/interpreter.py]
+from browser import document
+
+import symasm
+
+document <= symasm.cpu_gp_regs_suffixes['i']
+</script>
+</body>
+
+</html>
