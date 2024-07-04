@@ -1,6 +1,7 @@
 <html>
 
 <head>
+    <title>symasm online</title>
     <meta charset="utf-8">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.3/brython.min.js">
     </script>
@@ -14,20 +15,243 @@
         overflow:auto;
         width: 120ch;
         height: 55ch;
-        margin-left: 2%;
+        border: 1px solid;
+        margin: auto;
+        padding: 7px;
     }
     </style>
 </head>
 
 <body onload="brython({debug: 1/*, pythonpath: ['https://raw.githubusercontent.com/symasm/symasm/main/']*/})">
 
-<script type="text/python">
-# [https://github.com/brython-dev/brython/blob/master/www/src/Lib/interpreter.py]
-from browser import document
+<div id="code" class="codearea" contenteditable style="outline: 0px solid transparent"></div>
 
+<script type="text/python">
 import symasm
 
-document <= symasm.cpu_gp_regs_suffixes['i']
+# Based on [https://github.com/brython-dev/brython/blob/master/www/src/Lib/interpreter.py]
+
+import sys
+import re
+
+from browser import console, document, window, html, DOMNode
+from browser.widgets.dialog import Dialog
+
+class Output:
+    def __init__(self, interpreter):
+        self.interpreter = interpreter
+
+    def write(self, *args, **kw):
+        self.interpreter.write(*args, **kw)
+
+    def __len__(self):
+        return len(self.interpreter.buffer)
+
+# ANSI-style color characters support
+# cf. https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_(Select_Graphic_Rendition)_parameters
+
+color_character_pattern = re.compile(r'^\033\[([0-9;]*)m') # ]
+
+cc_colors = {
+    30: "Black",
+    31: "Red",
+    32: "Green",
+    33: "Yellow",
+    34: "Blue",
+    35: "Magenta",
+    36: "Cyan",
+    37: "White"
+}
+
+cc_bgcolors = {k + 10: v for (k, v) in cc_colors.items()}
+
+class Interpreter:
+    def __init__(self, elt_id, history=None, clear_zone=True):
+        """
+        - "history", if set, must be a list of strings
+        """
+
+        self.cc_style = None
+        self.cc_color = None
+        self.cc_bgcolor = None
+        self.default_cc_color = '#fff'
+        self.default_cc_bgcolor = '#000'
+
+        if isinstance(elt_id, str):
+            try:
+                elt = document[elt_id]
+                if elt.tagName != "DIV":
+                    raise ValueError(
+                        f"element {elt_id} is a {elt.tagName}, " +
+                        "not a DIV")
+                self.zone = elt
+            except KeyError:
+                raise KeyError(f"no element with id '{elt_id}'")
+        elif isinstance(elt_id, DOMNode):
+            if elt_id.tagName == "DIV":
+                self.zone = elt_id
+            else:
+                raise ValueError("element is not a DIV")
+        else:
+            raise ValueError("element should be a string or " +
+                f"a DIV, got '{elt_id.__class__.__name__}'")
+        if self.zone.contentEditable != 'true':
+            raise ValueError("DIV element must be contenteditable")
+        if clear_zone:
+            self.clear()
+        self.prompt = '>'
+        self.insert_prompt()
+
+        self.history = history or []
+        self.current = len(self.history)
+
+        self.zone.bind('keypress', self.keypress)
+        self.zone.bind('keydown', self.keydown)
+        self.zone.bind('mouseup', self.mouseup)
+
+        self.cursor_to_end()
+
+        sys.stdout = sys.stderr = Output(self)
+
+    def clear(self):
+        self.zone.text = ''
+
+    def insert(self, text):
+        # used for header text and prompts
+        pre = html.PRE(style="display:inline;white-space:pre-wrap;")
+        pre.text = text
+        if self.cc_color is not None:
+            pre.style.color = self.cc_color
+        if self.cc_bgcolor is not None:
+            pre.style.backgroundColor = self.cc_bgcolor
+        if self.cc_style is not None:
+            style = cc_styles[self.cc_style]
+            if isinstance(style, list):
+                attr, value = style
+                setattr(pre.style, attr, value)
+            else:
+                style(pre)
+        self.zone <= pre
+
+    def insert_prompt(self):
+        self.insert(self.prompt)
+
+    def insert_cr(self):
+        self.insert('\n')
+
+    def get_content(self):
+        return self.zone.text
+
+    def cursor_to_end(self, *args):
+        # set caret at the end of last child
+        sel = window.getSelection()
+        # self.zone.lastChild is a PRE, take its internal text node
+        last_child = self.zone.lastChild.firstChild
+        if last_child is None: # issue 2175
+            last_child = self.zone.lastChild
+        pos = len(last_child.text)
+        # put caret at the end of text
+        sel.setBaseAndExtent(last_child, pos, last_child, pos)
+        # make sure last line is visible
+        self.zone.lastChild.scrollIntoView({"block": "end", "behaviour": "smooth"})
+
+    def keypress(self, event):
+        if event.key == "Tab":
+            event.preventDefault()
+            self.insert("    ")
+        elif event.key == "Enter":
+            event.preventDefault() # don't insert line feed yet
+            selection = window.getSelection().toString()
+            if selection:
+                # If text was selected by the mouse, copy to clipboard
+                self.cursor_to_end()
+                return
+            self.handle_line(event)
+
+    def add_to_history(self, line):
+        self.history.append(line)
+
+    def handle_line(self, event=None):
+        src = self.get_content().strip()
+        currentLine = src[src.rfind("\n" + self.prompt) + len(self.prompt) + 1:]
+        if currentLine.strip():
+            self.add_to_history(currentLine)
+            self.current = len(self.history)
+        self.insert_cr()
+        self.write(' ' + symasm.answer(currentLine) + '\n')
+        self.insert_cr()
+        self.insert_prompt()
+
+        self.cursor_to_end()
+        if event is not None:
+            event.preventDefault()
+
+    def keydown(self, event):
+        sel = window.getSelection()
+        if event.key in ("ArrowLeft", "Backspace"):
+            # make sure the caret does not reach the prompt
+            if sel.anchorNode is not self.zone:
+                caret_column = sel.anchorOffset
+                if caret_column > len(self.prompt):
+                    return
+            event.preventDefault()
+            event.stopPropagation()
+        elif event.key == "Home":
+            anchor = sel.anchorNode
+            sel.setBaseAndExtent(anchor, len(self.prompt), anchor, len(self.prompt))
+            event.preventDefault()
+            event.stopPropagation()
+        elif event.key == "ArrowUp":
+            if self.current > 0:
+                last_child = self.zone.lastChild
+                last_child.text = last_child.text[:len(self.prompt)] + self.history[self.current - 1]
+                self.current -= 1
+                self.cursor_to_end()
+            event.preventDefault()
+        elif event.key == "ArrowDown":
+            if self.current < len(self.history) - 1:
+                self.current += 1
+                last_child = self.zone.lastChild
+                last_child.text = last_child.text[:len(self.prompt)] + self.history[self.current]
+                self.cursor_to_end()
+            event.preventDefault()
+        elif event.key in ["PageUp", "PageDown"]:
+            event.preventDefault()
+
+    def mouseup(self, ev):
+        """If nothing was selected by the mouse, set cursor to end of zone"""
+        sel = window.getSelection()
+        if sel.type == 'Caret':
+            self.cursor_to_end()
+
+    def write(self, data):
+        """Use for stdout / stderr."""
+        if not data:
+            return
+        data = str(data.replace(chr(0), ' '))
+        mo = color_character_pattern.search(data)
+        if mo:
+            data = data[mo.end():]
+            last_child = self.zone.lastChild
+            if not mo.groups()[0]:
+                tags = []
+            else:
+                tags = mo.groups()[0].split(';')
+            self.cc_style = 0
+            self.cc_color = self.default_cc_color
+            self.cc_bgcolor = self.default_cc_bgcolor
+            for tag in tags:
+                tag = int(tag)
+                if tag in cc_styles:
+                    self.cc_style = tag
+                elif tag in cc_colors:
+                    self.cc_color = cc_colors[tag]
+                elif tag in cc_bgcolors:
+                    self.cc_bgcolor = cc_bgcolors[tag]
+        self.insert(data)
+        self.cursor_to_end()
+
+Interpreter("code")
 </script>
 </body>
 
