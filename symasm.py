@@ -72,7 +72,6 @@ def tokenize(source, errors: list):
             elif '0' <= ch <= '9' or (ch == '.' and '0' <= source[i:i+1] <= '9'): # this is NUMERIC_LITERAL
                 is_hex = False
                 if i < len(source) and source[i] in 'xX':
-                    is_hex = True
                     i += 1
                 while i < len(source) and is_hexadecimal_digit(source[i]):
                     if not ('0' <= source[i] <= '9'):
@@ -88,9 +87,11 @@ def tokenize(source, errors: list):
 
                 tokens.append(Token(lexem_start, i, Token.Category.NUMERIC_LITERAL, source, len(tokens)))
 
-                if source[i-1].lower() == 'b':
+                if source[i-1].lower() == 'b' and source[lexem_start+1] not in 'xX':
                     for j in range(lexem_start, i-1):
                         if source[j] not in '01':
+                            if source[i:i+2] == ' <': # dirty hack for `objdump -d` output
+                                continue
                             errors.append(Error('wrong digit in binary number', j, j))
                 elif is_hex and (source[i-1].lower() != 'h' and source[lexem_start+1] not in 'xX'):
                     if source[i:i+2] == ' <': # dirty hack for `objdump -d` output
@@ -193,6 +194,7 @@ instructions_without_operands = {
     'cdq' : 'edx:eax = sx(eax)',
     'cqo' : 'rdx:rax = sx(rax)',
     'retq': 'ret',
+    'leaveq':'leave',
 }
 
 simple_instructions_with_2_operands = {
@@ -289,6 +291,14 @@ def translate_to_symasm_impl(lang, tokens, source: str, errors: List[Error] = No
                 writepos = toks[i].start
                 continue
 
+            elif token.string.lower() in asm_sizes and toks[i+1].string.lower() == 'ptr' and toks[i+2].string.lower() in ('ds', 'fs') and \
+                                                       toks[i+3].string == ':' and toks[i+4].category == Token.Category.NUMERIC_LITERAL:
+                r += asm_sizes[token.string.lower()] + '[' + (toks[i+2].string + ':' if toks[i+2].string.lower() != 'ds' else '') + fix_number(toks[i+4].string) + ']'
+                i += 5
+                if i < len(toks):
+                    writepos = toks[i].start
+                continue
+
             else:
                 r += fix_number(token.string)
 
@@ -321,10 +331,19 @@ def translate_to_symasm_impl(lang, tokens, source: str, errors: List[Error] = No
 
         mnem: str = line[0].string.lower()
 
+        if mnem in ('rep', 'repz', 'repnz', 'data16'):
+            res.append((line, ''))
+            continue
+
+        prefix = ''
+        if mnem == 'lock':
+            prefix = mnem + ' '
+            mnem = line[1].string.lower()
+
         operands: List[List[Token]] = []
         last_operand: List[Token] = []
         nesting_level = 0
-        for token in line[1:]:
+        for token in line[1+int(prefix != ''):]:
             if token.string == ',' and nesting_level == 0:
                 operands.append(last_operand)
                 last_operand = []
@@ -344,10 +363,10 @@ def translate_to_symasm_impl(lang, tokens, source: str, errors: List[Error] = No
             ops = [masm_op_str(op) for op in operands]
 
         def eoc(n): # expected operand count
-            return coc(n, operands, line[0], errors)
+            return coc(n, ops, line[0], errors)
 
         def eoc_range(fr, thru):
-            if len(operands) not in range(fr, thru + 1):
+            if len(ops) not in range(fr, thru + 1):
                 if errors is not None:
                     errors.append(error_at_token(f'`{mnem}` instruction must have {fr} through {thru} operands', line[0]))
 
@@ -378,13 +397,17 @@ def translate_to_symasm_impl(lang, tokens, source: str, errors: List[Error] = No
 
         elif mnem in simple_instructions_with_2_operands:
             if eoc(2):
-                res.append((line, ops[0] + ' ' + simple_instructions_with_2_operands[mnem] + '= ' + ops[1]))
+                res.append((line, prefix + ops[0] + ' ' + simple_instructions_with_2_operands[mnem] + '= ' + ops[1]))
+
+        elif mnem in ('movs', 'movabs'):
+            if eoc(2):
+                res.append((line, ops[0] + ' = ' + ops[1]))
 
         elif mnem in ('movsx', 'movsxd', 'movzx'):
             if eoc(2):
                 res.append((line, ops[0] + ' = ' + mnem[3:5] + '(' + ops[1] + ')'))
 
-        elif mnem in ('push', 'pop'):
+        elif mnem in ('push', 'pop', 'prefetchnta', 'prefetcht0', 'bswap'):
             eoc(1)
             res.append((line, mnem + ' ' + ops[0]))
 
@@ -527,9 +550,21 @@ def translate_to_symasm_impl(lang, tokens, source: str, errors: List[Error] = No
             eoc(2)
             res.append((line, 'cf:' + ops[0] + ' (' + ('<<' if mnem == 'rcl' else '>>') + ')= ' + ops[1]))
 
+        elif mnem == 'bt':
+            eoc(2)
+            res.append((line, 'cf = ' + ops[0] + '.bit(' + ops[1] + ')'))
+
+        elif mnem in ('btr', 'bts', 'btc'):
+            eoc(2)
+            res.append((line, f'cf = {ops[0]}.bit({ops[1]}), {ops[0]}.bit({ops[1]})' + {'r':' = 0', 's':' = 1', 'c':'.flip()'}[mnem[2]]))
+
         elif mnem == 'nop':
             eoc_range(0, 1)
             res.append((line, 'nop ' + ops[0] if len(ops) == 1 else 'nop'))
+
+        elif mnem == 'cmpxchg':
+            eoc(2)
+            res.append((line, prefix + mnem + ' ' + ops[0] + ', ' + ops[1]))
 
         elif mnem[0] == 'f':
             res.append((line, fpu_to_symasm(mnem, ops, line[0], errors)))
