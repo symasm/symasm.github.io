@@ -3,9 +3,9 @@
 <head>
     <title>symasm online</title>
     <meta charset="utf-8">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.3/brython.min.js">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.5/brython.min.js">
     </script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.3/brython_stdlib.min.js">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/brython/3.12.5/brython_stdlib.min.js">
     </script>
 
     <style>
@@ -23,11 +23,10 @@
 </head>
 
 <body>
-<brython-options pythonpath='https://raw.githubusercontent.com/symasm/symasm/main/' />
 
 <div id="code" class="codearea" contenteditable style="outline: 0px solid transparent"></div>
 
-<script type="text/python">
+<script type="text/python" pythonpath='https://raw.githubusercontent.com/symasm/symasm/main/'>
 import symasm
 
 # Based on [https://github.com/brython-dev/brython/blob/master/www/src/Lib/interpreter.py]
